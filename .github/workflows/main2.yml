@@ -1,218 +1,95 @@
-name: Multi-Proxy Server for Iran
+name: SOCKS5 Proxy Server
 
 on:
   workflow_dispatch:
 
 jobs:
-  proxy-server:
+  socks5-proxy:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     
     steps:
-      - name: Install All Proxy Services
+      - name: Setup Microsocks SOCKS5 Proxy
         run: |
           sudo apt-get update
           
-          # OpenSSH Server
-          sudo apt-get install -y openssh-server
+          # Install dependencies
+          sudo apt-get install -y build-essential git
           
-          # Squid for HTTP Proxy
-          sudo apt-get install -y squid
+          # Clone and build microsocks
+          git clone https://github.com/rofl0r/microsocks.git
+          cd microsocks
+          make
+          sudo make install
           
-          # Dante for SOCKS5
-          sudo apt-get install -y dante-server
+          # Run SOCKS5 proxy on port 1080 with authentication
+          microsocks -1 -u proxyuser -P ProxyPass123 -p 1080 &
           
-          echo "All packages installed successfully"
+          sleep 2
+          
+          # Check if running
+          if netstat -tlnp | grep 1080; then
+            echo "✅ SOCKS5 Proxy started on port 1080"
+          else
+            echo "❌ Failed to start"
+            exit 1
+          fi
 
-      - name: Setup SSH SOCKS5 Proxy
-        run: |
-          # تنظیم SSH Server
-          echo "runner:VPNpass123" | sudo chpasswd
-          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/#Port 22/Port 443/' /etc/ssh/sshd_config
-          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo service ssh restart
-          
-          echo "✅ SSH SOCKS5 Proxy ready on port 443"
-
-      - name: Setup HTTP Proxy (Squid)
-        run: |
-          sudo tee /etc/squid/squid.conf > /dev/null << 'EOF'
-          http_port 3128
-          
-          acl all src 0.0.0.0/0
-          http_access allow all
-          
-          cache deny all
-          via off
-          forwarded_for delete
-          EOF
-          
-          sudo service squid restart
-          echo "✅ HTTP Proxy ready on port 3128"
-
-      - name: Setup SOCKS5 Proxy (Dante)
-        run: |
-          # پیدا کردن اینترفیس شبکه
-          INTERFACE=$(ip route | grep default | awk '{print $5}')
-          
-          sudo tee /etc/danted.conf > /dev/null << EOF
-          logoutput: syslog
-          
-          internal: ${INTERFACE} port = 1080
-          external: ${INTERFACE}
-          
-          method: none
-          
-          clientmethod: none
-          
-          user.privileged: root
-          user.unprivileged: nobody
-          
-          client pass {
-              from: 0.0.0.0/0 to: 0.0.0.0/0
-              log: connect disconnect
-          }
-          
-          pass {
-              from: 0.0.0.0/0 to: 0.0.0.0/0
-              command: bind connect udpassociate
-              log: connect disconnect
-          }
-          EOF
-          
-          sudo service danted restart
-          echo "✅ SOCKS5 Proxy ready on port 1080"
-
-      - name: Setup Tinyproxy (Backup HTTP Proxy)
-        run: |
-          sudo apt-get install -y tinyproxy
-          
-          sudo tee /etc/tinyproxy/tinyproxy.conf > /dev/null << 'EOF'
-          User nobody
-          Group nogroup
-          Port 8888
-          Listen 0.0.0.0
-          Timeout 600
-          Allow 0.0.0.0/0
-          DisableViaHeader Yes
-          EOF
-          
-          sudo service tinyproxy restart
-          echo "✅ Backup HTTP Proxy ready on port 8888"
-
-      - name: Show All Proxy Details
+      - name: Show Proxy Details
         run: |
           PUBLIC_IP=$(curl -s --connect-timeout 10 ifconfig.me 2>/dev/null || curl -s icanhazip.com)
           
-          echo "=============================================="
-          echo "  🌐 MULTI-PROXY SERVER READY"
-          echo "=============================================="
+          echo "========================================="
+          echo "  ✅ SOCKS5 PROXY READY"
+          echo "========================================="
           echo ""
-          echo "📍 Server IP: $PUBLIC_IP"
+          echo "🌐 Server IP: $PUBLIC_IP"
+          echo "🔌 Port: 1080"
+          echo "👤 Username: proxyuser"
+          echo "🔑 Password: ProxyPass123"
           echo ""
-          echo "=============================================="
-          echo "1️⃣  SSH SOCKS5 Proxy"
-          echo "=============================================="
-          echo "   Host: $PUBLIC_IP"
-          echo "   Port: 443"
-          echo "   Username: runner"
-          echo "   Password: VPNpass123"
+          echo "========================================="
+          echo "  📱 HOW TO USE"
+          echo "========================================="
           echo ""
-          echo "   📱 Usage:"
-          echo "   ssh -D 1080 -p 443 runner@$PUBLIC_IP"
-          echo ""
-          echo "=============================================="
-          echo "2️⃣  HTTP Proxy (Squid)"
-          echo "=============================================="
-          echo "   Host: $PUBLIC_IP"
-          echo "   Port: 3128"
-          echo "   No authentication"
-          echo ""
-          echo "   📱 Test:"
-          echo "   curl -x http://$PUBLIC_IP:3128 ifconfig.me"
-          echo ""
-          echo "=============================================="
-          echo "3️⃣  SOCKS5 Proxy (Dante)"
-          echo "=============================================="
-          echo "   Host: $PUBLIC_IP"
-          echo "   Port: 1080"
-          echo "   No authentication"
-          echo ""
-          echo "   📱 Test:"
-          echo "   curl --socks5 $PUBLIC_IP:1080 ifconfig.me"
-          echo ""
-          echo "=============================================="
-          echo "4️⃣  TinyProxy (Backup HTTP)"
-          echo "=============================================="
-          echo "   Host: $PUBLIC_IP"
-          echo "   Port: 8888"
-          echo ""
-          echo "=============================================="
-          echo "  🔧 How to use in browser:"
-          echo "=============================================="
-          echo ""
-          echo "Firefox/Chrome:"
+          echo "BROWSER (Firefox/Chrome):"
           echo "  Settings → Proxy → Manual"
-          echo "  HTTP Proxy: $PUBLIC_IP:3128"
-          echo "  Or SOCKS5: $PUBLIC_IP:1080"
+          echo "  SOCKS5 Host: $PUBLIC_IP"
+          echo "  Port: 1080"
+          echo "  Username: proxyuser"
+          echo "  Password: ProxyPass123"
           echo ""
-          echo "Android (Drony/ProxyDroid):"
-          echo "  HTTP: $PUBLIC_IP:3128"
-          echo "  SOCKS5: $PUBLIC_IP:1080"
+          echo "ANDROID (Drony/ProxyDroid):"
+          echo "  Host: $PUBLIC_IP"
+          echo "  Port: 1080"
+          echo "  Type: SOCKS5"
+          echo "  User: proxyuser"
+          echo "  Pass: ProxyPass123"
           echo ""
-          echo "iOS (Shadowrocket):"
-          echo "  Add proxy → Type: HTTP/SOCKS5"
+          echo "iOS (Shadowrocket/Potatso):"
+          echo "  Type: SOCKS5"
           echo "  Server: $PUBLIC_IP"
-          echo "=============================================="
+          echo "  Port: 1080"
+          echo "  User: proxyuser"
+          echo "  Pass: ProxyPass123"
+          echo ""
+          echo "========================================="
 
-      - name: Keep Server Alive
+      - name: Keep Alive
         run: |
           PUBLIC_IP=$(curl -s ifconfig.me)
-          
-          echo "========================================="
-          echo "🟢 Server Active on $PUBLIC_IP"
-          echo "========================================="
+          echo "Server running at $PUBLIC_IP:1080"
           echo ""
           
           for i in {1..72}; do
-            hours=$((i * 5 / 60))
-            minutes=$(((i * 5) % 60))
+            echo "[$(date '+%H:%M:%S')] Alive: $((i*5)) min | IP: $PUBLIC_IP"
             
-            echo "[$(date '+%H:%M:%S')] Uptime: ${hours}h ${minutes}m"
-            
-            # Check SSH
-            if systemctl is-active ssh > /dev/null 2>&1; then
-              echo "  ✅ SSH (443)"
+            if pgrep microsocks > /dev/null; then
+              echo "  ✅ Proxy running"
             else
-              echo "  ❌ SSH (443) - Restarting..."
-              sudo service ssh restart
+              echo "  ❌ Proxy stopped - restarting..."
+              microsocks -1 -u proxyuser -P ProxyPass123 -p 1080 &
             fi
             
-            # Check Squid
-            if systemctl is-active squid > /dev/null 2>&1; then
-              echo "  ✅ Squid HTTP (3128)"
-            else
-              echo "  ❌ Squid (3128) - Restarting..."
-              sudo service squid restart
-            fi
-            
-            # Check Dante
-            if systemctl is-active danted > /dev/null 2>&1; then
-              echo "  ✅ Dante SOCKS5 (1080)"
-            else
-              echo "  ❌ Dante (1080) - Restarting..."
-              sudo service danted restart
-            fi
-            
-            # Check Tinyproxy
-            if systemctl is-active tinyproxy > /dev/null 2>&1; then
-              echo "  ✅ Tinyproxy HTTP (8888)"
-            else
-              echo "  ❌ Tinyproxy (8888) - Restarting..."
-              sudo service tinyproxy restart
-            fi
-            
-            echo ""
-            sleep 300  # 5 minutes
+            sleep 300
           done
