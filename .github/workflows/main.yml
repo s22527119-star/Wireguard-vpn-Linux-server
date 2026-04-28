@@ -1,4 +1,4 @@
-name: WireGuard Server with Localtonet Tunnel
+name: WireGuard Server + Reverse Tunnel to Iranian Server
 
 on:
   workflow_dispatch:
@@ -6,12 +6,9 @@ on:
 jobs:
   vpn-server:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Start WireGuard Server
         run: |
           docker run -d \
@@ -20,9 +17,9 @@ jobs:
             --cap-add=SYS_MODULE \
             -e PUID=1000 \
             -e PGID=1000 \
-            -e SERVERURL=auto \
+            -e SERVERURL=${{ secrets.IRAN_SERVER_IP }} \
             -e SERVERPORT=51820 \
-            -e PEERS=3 \
+            -e PEERS=5 \
             -e PEERDNS=8.8.8.8 \
             -p 51820:51820/udp \
             -v ~/wireguard:/config \
@@ -33,39 +30,67 @@ jobs:
           sleep 20
           echo "WireGuard server started"
 
-      - name: Create Localtonet Tunnel
+      - name: Create Reverse Tunnel to Iranian Server
+        env:
+          IRAN_SERVER_IP: ${{ secrets.IRAN_SERVER_IP }}
+          IRAN_SERVER_USER: ${{ secrets.IRAN_SERVER_USER }}
+          IRAN_SERVER_SSH_KEY: ${{ secrets.IRAN_SERVER_SSH_KEY }}
+          IRAN_SERVER_PORT: ${{ secrets.IRAN_SERVER_PORT }}
         run: |
-          # دانلود Localtonet client
-          wget https://localtonet.com/download/localtonet-linux-x64.tar.gz
-          tar -xzf localtonet-linux-x64.tar.gz
-          chmod +x localtonet
+          mkdir -p ~/.ssh
+          echo "$IRAN_SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
           
-          # اجرای تونل (نیاز به توکن رایگان از localtonet.com)
-          ./localtonet authtoken ${{ secrets.LOCALTONET_TOKEN }}
+          # ایجاد تونل معکوس از رانر به سرور ایران
+          # پورت 51820 رانر رو به پورت دلخواه روی سرور ایران فوروارد می‌کنیم
+          ssh -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=60 \
+              -o ServerAliveCountMax=3 \
+              -R ${{ secrets.IRAN_SERVER_PORT }}:localhost:51820 \
+              -N -f \
+              $IRAN_SERVER_USER@$IRAN_SERVER_IP
           
-          # ایجاد تونل UDP برای پورت 51820
-          ./localtonet udp --port 51820 &
-          
-          sleep 10
-          
-          echo "Tunnel created. Use the Localtonet URL to connect"
-          
-          # نمایش URL تونل
-          curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url'
+          echo "========================================="
+          echo "Reverse tunnel created!"
+          echo "WireGuard Endpoint: $IRAN_SERVER_IP:${{ secrets.IRAN_SERVER_PORT }}"
+          echo "========================================="
 
-      - name: Show Client Configs
+      - name: Show Client Configurations
         run: |
-          echo "========================================="
-          echo "WireGuard Server Ready!"
-          echo "========================================="
-          
-          # نشان دادن کانفیگ‌ها
-          sudo cat ~/wireguard/peer*/peer*.conf 2>/dev/null || true
-          
+          echo "=== Client Configs ==="
+          echo "Server: ${{ secrets.IRAN_SERVER_IP }}:${{ secrets.IRAN_SERVER_PORT }}"
           echo ""
-          echo "⚠️  Replace Endpoint with Localtonet URL"
+          
+          # نمایش کانفیگ‌ها
+          sudo find ~/wireguard -name "peer*.conf" -type f | while read conf; do
+            echo "----------------------------------------"
+            cat "$conf"
+            echo "----------------------------------------"
+            echo ""
+          done
+          
+          echo "⚠️  Replace Endpoint with: ${{ secrets.IRAN_SERVER_IP }}:${{ secrets.IRAN_SERVER_PORT }}"
 
-      - name: Keep Alive
+      - name: Keep Alive with Monitoring
         run: |
           echo "Server is running..."
-          sleep 3600  # 1 ساعت
+          echo "Check every 5 minutes to keep tunnel alive"
+          echo ""
+          
+          for i in $(seq 1 72); do  # 72 * 5 = 360 دقیقه = 6 ساعت
+            minutes=$((i * 5))
+            echo "[$(date)] Uptime: $minutes minutes"
+            
+            # Check if WireGuard is running
+            docker exec wireguard wg show 2>/dev/null | grep -E "interface|peer|transfer" || echo "WireGuard check failed"
+            
+            # Check reverse tunnel
+            ssh -o StrictHostKeyChecking=no \
+                -o ConnectTimeout=5 \
+                -o ServerAliveInterval=10 \
+                -p ${{ secrets.IRAN_SERVER_SSH_PORT }} \
+                ${{ secrets.IRAN_SERVER_USER }}@${{ secrets.IRAN_SERVER_IP }} \
+                "echo 'Tunnel alive at $(date)'" 2>/dev/null || echo "Tunnel check failed"
+            
+            sleep 300
+          done
