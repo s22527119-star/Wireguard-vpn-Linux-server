@@ -6,26 +6,23 @@ on:
 jobs:
   proxy-server:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 ساعت
+    timeout-minutes: 360
     
     steps:
       - name: Install All Proxy Services
         run: |
           sudo apt-get update
           
-          # 1. OpenSSH Server for SOCKS5
+          # OpenSSH Server
           sudo apt-get install -y openssh-server
           
-          # 2. Squid for HTTP Proxy
+          # Squid for HTTP Proxy
           sudo apt-get install -y squid
           
-          # 3. Dante for SOCKS5
+          # Dante for SOCKS5
           sudo apt-get install -y dante-server
           
-          # 4. 3Proxy (lightweight)
-          sudo apt-get install -y 3proxy
-          
-          echo "All packages installed"
+          echo "All packages installed successfully"
 
       - name: Setup SSH SOCKS5 Proxy
         run: |
@@ -36,64 +33,34 @@ jobs:
           sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo service ssh restart
           
-          echo "SSH SOCKS5 Proxy ready on port 443"
+          echo "✅ SSH SOCKS5 Proxy ready on port 443"
 
       - name: Setup HTTP Proxy (Squid)
         run: |
           sudo tee /etc/squid/squid.conf > /dev/null << 'EOF'
           http_port 3128
           
-          # Allow all
           acl all src 0.0.0.0/0
           http_access allow all
           
-          # Basic settings
           cache deny all
           via off
           forwarded_for delete
-          
-          # Hide proxy
-          request_header_access Allow allow all
-          request_header_access Authorization allow all
-          request_header_access WWW-Authenticate allow all
-          request_header_access Proxy-Authorization allow all
-          request_header_access Proxy-Authenticate allow all
-          request_header_access Cache-Control allow all
-          request_header_access Content-Encoding allow all
-          request_header_access Content-Length allow all
-          request_header_access Content-Type allow all
-          request_header_access Date allow all
-          request_header_access Expires allow all
-          request_header_access Host allow all
-          request_header_access If-Modified-Since allow all
-          request_header_access Last-Modified allow all
-          request_header_access Location allow all
-          request_header_access Pragma allow all
-          request_header_access Accept allow all
-          request_header_access Accept-Charset allow all
-          request_header_access Accept-Encoding allow all
-          request_header_access Accept-Language allow all
-          request_header_access Content-Language allow all
-          request_header_access Mime-Version allow all
-          request_header_access Retry-After allow all
-          request_header_access Title allow all
-          request_header_access Connection allow all
-          request_header_access Allow allow all
-          request_header_access Proxy-Connection allow all
-          request_header_access X-Cache allow all
-          request_header_access X-Cache-Lookup allow all
           EOF
           
           sudo service squid restart
-          echo "HTTP Proxy ready on port 3128"
+          echo "✅ HTTP Proxy ready on port 3128"
 
       - name: Setup SOCKS5 Proxy (Dante)
         run: |
-          sudo tee /etc/danted.conf > /dev/null << 'EOF'
+          # پیدا کردن اینترفیس شبکه
+          INTERFACE=$(ip route | grep default | awk '{print $5}')
+          
+          sudo tee /etc/danted.conf > /dev/null << EOF
           logoutput: syslog
           
-          internal: eth0 port = 1080
-          external: eth0
+          internal: ${INTERFACE} port = 1080
+          external: ${INTERFACE}
           
           method: none
           
@@ -115,35 +82,24 @@ jobs:
           EOF
           
           sudo service danted restart
-          echo "SOCKS5 Proxy ready on port 1080"
+          echo "✅ SOCKS5 Proxy ready on port 1080"
 
-      - name: Setup 3Proxy (Alternative)
+      - name: Setup Tinyproxy (Backup HTTP Proxy)
         run: |
-          sudo tee /etc/3proxy/3proxy.cfg > /dev/null << 'EOF'
-          nserver 8.8.8.8
-          nserver 1.1.1.1
+          sudo apt-get install -y tinyproxy
           
-          nscache 65536
-          timeouts 1 5 30 60 180 1800 15 60
-          
-          users $/etc/3proxy/.proxyauth
-          
-          daemon
-          log /var/log/3proxy.log D
-          logformat "- +_L%t.%. %N.%p %E %U %C:%c %R:%r %O %I %h %T"
-          rotate 30
-          
-          auth none
-          
-          # HTTP Proxy on port 8080
-          proxy -p8080
-          
-          # SOCKS5 on port 1081
-          socks -p1081
+          sudo tee /etc/tinyproxy/tinyproxy.conf > /dev/null << 'EOF'
+          User nobody
+          Group nogroup
+          Port 8888
+          Listen 0.0.0.0
+          Timeout 600
+          Allow 0.0.0.0/0
+          DisableViaHeader Yes
           EOF
           
-          sudo service 3proxy restart
-          echo "3Proxy ready (HTTP:8080, SOCKS5:1081)"
+          sudo service tinyproxy restart
+          echo "✅ Backup HTTP Proxy ready on port 8888"
 
       - name: Show All Proxy Details
         run: |
@@ -165,7 +121,6 @@ jobs:
           echo ""
           echo "   📱 Usage:"
           echo "   ssh -D 1080 -p 443 runner@$PUBLIC_IP"
-          echo "   Or use in browser: SOCKS5 proxy settings"
           echo ""
           echo "=============================================="
           echo "2️⃣  HTTP Proxy (Squid)"
@@ -174,9 +129,8 @@ jobs:
           echo "   Port: 3128"
           echo "   No authentication"
           echo ""
-          echo "   📱 Usage:"
+          echo "   📱 Test:"
           echo "   curl -x http://$PUBLIC_IP:3128 ifconfig.me"
-          echo "   Or set in browser/system proxy settings"
           echo ""
           echo "=============================================="
           echo "3️⃣  SOCKS5 Proxy (Dante)"
@@ -185,30 +139,31 @@ jobs:
           echo "   Port: 1080"
           echo "   No authentication"
           echo ""
-          echo "   📱 Usage:"
+          echo "   📱 Test:"
           echo "   curl --socks5 $PUBLIC_IP:1080 ifconfig.me"
-          echo "   Or use with proxychains"
           echo ""
           echo "=============================================="
-          echo "4️⃣  3Proxy (Backup)"
+          echo "4️⃣  TinyProxy (Backup HTTP)"
           echo "=============================================="
-          echo "   HTTP: $PUBLIC_IP:8080"
-          echo "   SOCKS5: $PUBLIC_IP:1081"
+          echo "   Host: $PUBLIC_IP"
+          echo "   Port: 8888"
           echo ""
           echo "=============================================="
-          echo "  📋 Connection Test Commands"
+          echo "  🔧 How to use in browser:"
           echo "=============================================="
           echo ""
-          echo "# Test HTTP Proxy:"
-          echo "curl -x http://$PUBLIC_IP:3128 http://ifconfig.me"
+          echo "Firefox/Chrome:"
+          echo "  Settings → Proxy → Manual"
+          echo "  HTTP Proxy: $PUBLIC_IP:3128"
+          echo "  Or SOCKS5: $PUBLIC_IP:1080"
           echo ""
-          echo "# Test SOCKS5:"
-          echo "curl --socks5 $PUBLIC_IP:1080 http://ifconfig.me"
+          echo "Android (Drony/ProxyDroid):"
+          echo "  HTTP: $PUBLIC_IP:3128"
+          echo "  SOCKS5: $PUBLIC_IP:1080"
           echo ""
-          echo "# Test SSH Tunnel:"
-          echo "ssh -D 9999 -p 443 runner@$PUBLIC_IP"
-          echo "Then set browser SOCKS5 proxy to localhost:9999"
-          echo ""
+          echo "iOS (Shadowrocket):"
+          echo "  Add proxy → Type: HTTP/SOCKS5"
+          echo "  Server: $PUBLIC_IP"
           echo "=============================================="
 
       - name: Keep Server Alive
@@ -216,13 +171,10 @@ jobs:
           PUBLIC_IP=$(curl -s ifconfig.me)
           
           echo "========================================="
-          echo "Server Active on $PUBLIC_IP"
+          echo "🟢 Server Active on $PUBLIC_IP"
           echo "========================================="
           echo ""
-          echo "Services Status:"
-          echo "-----------------"
           
-          # Check all services
           for i in {1..72}; do
             hours=$((i * 5 / 60))
             minutes=$(((i * 5) % 60))
@@ -231,23 +183,34 @@ jobs:
             
             # Check SSH
             if systemctl is-active ssh > /dev/null 2>&1; then
-              echo "  SSH (443): ✅ Running"
+              echo "  ✅ SSH (443)"
             else
-              echo "  SSH (443): ❌ Stopped"
+              echo "  ❌ SSH (443) - Restarting..."
+              sudo service ssh restart
             fi
             
             # Check Squid
             if systemctl is-active squid > /dev/null 2>&1; then
-              echo "  HTTP (3128): ✅ Running"
+              echo "  ✅ Squid HTTP (3128)"
             else
-              echo "  HTTP (3128): ❌ Stopped"
+              echo "  ❌ Squid (3128) - Restarting..."
+              sudo service squid restart
             fi
             
             # Check Dante
             if systemctl is-active danted > /dev/null 2>&1; then
-              echo "  SOCKS5 (1080): ✅ Running"
+              echo "  ✅ Dante SOCKS5 (1080)"
             else
-              echo "  SOCKS5 (1080): ❌ Stopped"
+              echo "  ❌ Dante (1080) - Restarting..."
+              sudo service danted restart
+            fi
+            
+            # Check Tinyproxy
+            if systemctl is-active tinyproxy > /dev/null 2>&1; then
+              echo "  ✅ Tinyproxy HTTP (8888)"
+            else
+              echo "  ❌ Tinyproxy (8888) - Restarting..."
+              sudo service tinyproxy restart
             fi
             
             echo ""
