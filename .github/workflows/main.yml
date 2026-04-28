@@ -13,39 +13,37 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup WireGuard Server
+      - name: Install WireGuard Tools
         run: |
-          # ایجاد دایرکتوری‌های مورد نیاز
-          mkdir -p /tmp/wireguard/config
-          mkdir -p /tmp/wireguard/peer_confs
-          
-          # تنظیم permission
-          sudo chown -R 1000:1000 /tmp/wireguard
+          sudo apt-get update
+          sudo apt-get install -y wireguard-tools
 
       - name: Generate Server Keys
         run: |
-          # نصب wireguard-tools برای تولید کلید
-          sudo apt-get update
-          sudo apt-get install -y wireguard-tools
-          
           # تولید کلیدهای سرور
           SERVER_PRIVATE_KEY=$(wg genkey)
           SERVER_PUBLIC_KEY=$(echo "$SERVER_PRIVATE_KEY" | wg pubkey)
           
-          # ذخیره در فایل
-          echo "SERVER_PRIVATE_KEY=$SERVER_PRIVATE_KEY" > /tmp/wireguard/keys.env
-          echo "SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY" >> /tmp/wireguard/keys.env
+          # ذخیره در متغیرهای محیطی (بدون فایل)
+          echo "SERVER_PRIVATE_KEY=$SERVER_PRIVATE_KEY" >> $GITHUB_ENV
+          echo "SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY" >> $GITHUB_ENV
           
-          # نمایش کلید عمومی (برای اتصال کلاینت‌ها)
+          # نمایش کلید عمومی
           echo "========================================="
-          echo "Server Public Key (give this to clients):"
-          echo "$SERVER_PUBLIC_KEY"
+          echo "Server Public Key: $SERVER_PUBLIC_KEY"
           echo "========================================="
 
-      - name: Set Server Config
+      - name: Setup Directories
         run: |
-          source /tmp/wireguard/keys.env
+          mkdir -p /tmp/wireguard/config
+          mkdir -p /tmp/wireguard/peer_confs
           
+          # تغییر مالکیت با sudo
+          sudo chown -R $USER:$USER /tmp/wireguard
+          sudo chmod -R 755 /tmp/wireguard
+
+      - name: Create Server Config
+        run: |
           cat > /tmp/wireguard/config/wg0.conf << EOF
           [Interface]
           Address = 10.13.13.1/24
@@ -53,14 +51,10 @@ jobs:
           PrivateKey = $SERVER_PRIVATE_KEY
           PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
           PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
-          
-          # Client 1
-          [Peer]
-          PublicKey = CLIENT_PUBLIC_KEY_PLACEHOLDER
-          AllowedIPs = 10.13.13.2/32
           EOF
           
           echo "Server config created"
+          cat /tmp/wireguard/config/wg0.conf | grep -v PrivateKey
 
       - name: Start WireGuard Server Container
         run: |
@@ -71,9 +65,9 @@ jobs:
             -e PUID=1000 \
             -e PGID=1000 \
             -e TZ=UTC \
-            -e SERVERURL=github-actions-runner \
+            -e SERVERURL=auto \
             -e SERVERPORT=51820 \
-            -e PEERS=1 \
+            -e PEERS=2 \
             -e PEERDNS=8.8.8.8 \
             -e INTERNAL_SUBNET=10.13.13.0 \
             -p 51820:51820/udp \
@@ -81,7 +75,6 @@ jobs:
             -v /tmp/wireguard/peer_confs:/peer_confs \
             --sysctl="net.ipv4.conf.all.src_valid_mark=1" \
             --sysctl="net.ipv4.ip_forward=1" \
-            --restart=unless-stopped \
             linuxserver/wireguard:latest
           
           echo "Server starting..."
@@ -90,54 +83,57 @@ jobs:
           echo "=== Container Logs ==="
           docker logs wireguard-server 2>&1
 
-      - name: Show Connection Info
+      - name: Get Public IP and Show Connection Info
         run: |
+          PUBLIC_IP=$(curl -s ifconfig.me)
+          
           echo "========================================="
           echo "WireGuard Server is Running!"
           echo "========================================="
-          
-          # نمایش IP عمومی رانر
-          PUBLIC_IP=$(curl -s ifconfig.me)
           echo "Server Public IP: $PUBLIC_IP"
           echo "Server Port: 51820"
-          echo ""
-          
-          # نمایش کلید عمومی سرور
-          if [ -f "/tmp/wireguard/keys.env" ]; then
-            source /tmp/wireguard/keys.env
-            echo "Server Public Key: $SERVER_PUBLIC_KEY"
-          fi
-          echo ""
+          echo "Server Public Key: $SERVER_PUBLIC_KEY"
           echo "========================================="
-          echo "Peer configs:"
-          echo "========================================="
+          echo ""
           
           # نمایش کانفیگ‌های کلاینت
+          echo "=== Client Configurations ==="
+          # صبر کن تا کانفیگ‌ها ساخته بشن
+          sleep 10
+          
           if [ -d "/tmp/wireguard/peer_confs" ]; then
-            ls -la /tmp/wireguard/peer_confs/
-            for conf in /tmp/wireguard/peer_confs/*.conf; do
-              if [ -f "$conf" ]; then
-                echo "=== $conf ==="
-                cat "$conf"
+            find /tmp/wireguard/peer_confs -name "*.conf" -o -name "*.png" | while read file; do
+              if [ -f "$file" ]; then
+                echo "--- File: $file ---"
+                cat "$file" 2>/dev/null || echo "Binary file"
                 echo ""
               fi
             done
+            
+            # نمایش محتوای دایرکتوری config
+            echo "=== All config files ==="
+            find /tmp/wireguard/config -type f -name "*.conf" -exec echo "---" \; -exec cat {} \; -exec echo "---" \;
           fi
 
       - name: Test Server
         run: |
-          echo "Testing server..."
+          echo "=== Server Status ==="
           docker exec wireguard-server wg show
           echo ""
-          echo "Server status:"
+          echo "=== Network Interfaces ==="
           docker exec wireguard-server ip addr show wg0
 
-      - name: Keep Server Running
+      - name: Keep Server Alive
         run: |
-          echo "Server is running. Container will stay up..."
-          echo "Use these details to connect from external apps:"
           PUBLIC_IP=$(curl -s ifconfig.me)
+          echo "========================================="
+          echo "SERVER READY!"
           echo "Endpoint: $PUBLIC_IP:51820"
+          echo "Server Public Key: $SERVER_PUBLIC_KEY"
+          echo "========================================="
+          echo ""
+          echo "Server will stay up..."
           
-          # برای اینکه رانر زنده بمونه (حداکثر 6 ساعت)
-          # می‌تونید یک sleep طولانی بذارید یا کارهای دیگه انجام بدید
+          # Keep alive for 1 hour (3600 seconds)
+          # می‌تونید این رو تغییر بدید
+          sleep 3600
