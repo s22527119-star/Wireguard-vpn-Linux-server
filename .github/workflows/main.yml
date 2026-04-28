@@ -1,122 +1,49 @@
-name: WireGuard VPN - Debug Mode
+name: WireGuard with Chisel Tunnel
 
 on:
   workflow_dispatch:
 
 jobs:
-  vpn-debug:
+  vpn:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     
     steps:
       - name: Start WireGuard
         run: |
           mkdir -p ~/wireguard
-          
           docker run -d \
             --name=wireguard \
             --cap-add=NET_ADMIN \
-            --cap-add=SYS_MODULE \
-            -e PUID=1000 \
-            -e PGID=1000 \
             -e PEERS=3 \
-            -e PEERDNS=8.8.8.8 \
-            -e SERVERURL=auto \
-            -e SERVERPORT=51820 \
             -p 51820:51820/udp \
             -v ~/wireguard:/config \
-            --sysctl="net.ipv4.conf.all.src_valid_mark=1" \
             linuxserver/wireguard:latest
           
-          sleep 20
-          
-          echo "=== WireGuard Status ==="
-          docker exec wireguard wg show 2>/dev/null || echo "WireGuard not ready yet"
-          
-          echo "=== WireGuard Port Check ==="
-          sudo netstat -tuln | grep 51820 || echo "Port 51820 not listening"
+          sleep 25
 
-      - name: Debug SSH Connection
+      - name: Setup Chisel Tunnel
         run: |
-          echo "=== Step 1: Create SSH directory ==="
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
+          # دانلود Chisel
+          wget https://github.com/jpillora/chisel/releases/download/v1.9.1/chisel_1.9.1_linux_amd64.gz
+          gunzip chisel_1.9.1_linux_amd64.gz
+          chmod +x chisel_1.9.1_linux_amd64
+          sudo mv chisel_1.9.1_linux_amd64 /usr/local/bin/chisel
           
-          echo "=== Step 2: Check Secret exists ==="
-          if [ -z "${{ secrets.IRAN_SERVER_SSH_KEY }}" ]; then
-            echo "❌ IRAN_SERVER_SSH_KEY is empty!"
-            exit 1
-          else
-            echo "✅ SSH key found (length: ${#SSH_KEY})"
-          fi
-          
-          echo "=== Step 3: Save SSH key ==="
-          echo "${{ secrets.IRAN_SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ls -la ~/.ssh/
-          
-          echo "=== Step 4: Check key format ==="
-          head -1 ~/.ssh/id_rsa
-          
-          echo "=== Step 5: Test SSH connection ==="
-          ssh \
-            -o StrictHostKeyChecking=accept-new \
-            -o ConnectTimeout=10 \
-            -o BatchMode=yes \
-            -v \
-            ${{ secrets.IRAN_SERVER_USER }}@${{ secrets.IRAN_SERVER_IP }} \
-            "echo 'SSH connection successful'" 2>&1 || echo "SSH connection failed"
-
-      - name: Try Simple Reverse Tunnel
-        run: |
-          echo "=== Creating reverse tunnel ==="
-          
-          # Kill existing tunnels
-          pkill ssh 2>/dev/null || true
-          sleep 2
-          
-          # Simple reverse tunnel
-          ssh \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=10 \
-            -o ServerAliveInterval=30 \
-            -o ExitOnForwardFailure=no \
-            -f -N \
-            -R 51820:127.0.0.1:51820 \
-            ${{ secrets.IRAN_SERVER_USER }}@${{ secrets.IRAN_SERVER_IP }} \
-            2>&1
+          # اجرای Chisel client برای UDP forwarding
+          chisel client \
+            --auth "${{ secrets.CHISEL_USER }}:${{ secrets.CHISEL_PASS }}" \
+            ${{ secrets.IRAN_SERVER_IP }}:${{ secrets.CHISEL_PORT }} \
+            51820:127.0.0.1:51820/udp &
           
           sleep 5
-          
-          echo "=== Check if tunnel is running ==="
-          if ps aux | grep "ssh.*-R" | grep -v grep; then
-            echo "✅ SSH tunnel process found"
-          else
-            echo "❌ No SSH tunnel process"
-            
-            # Try alternative: without -f flag
-            echo "=== Trying alternative method ==="
-            timeout 10 ssh \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o ConnectTimeout=10 \
-              -N \
-              -R 51820:127.0.0.1:51820 \
-              ${{ secrets.IRAN_SERVER_USER }}@${{ secrets.IRAN_SERVER_IP }} \
-              2>&1 &
-            
-            sleep 5
-          fi
+          echo "Chisel tunnel established"
 
-      - name: Show Client Configs
+      - name: Show Configs
         run: |
-          echo "=== Client Configurations ==="
-          sudo find ~/wireguard -name "peer*.conf" -type f 2>/dev/null | while read conf; do
-            echo "--- Config: $conf ---"
-            sudo cat "$conf" 2>/dev/null || cat "$conf" 2>/dev/null
-            echo ""
-          done || echo "No configs found in ~/wireguard"
-          
-          echo "=== Alternative config locations ==="
-          sudo find / -name "peer*.conf" -type f 2>/dev/null | head -5
+          sudo cat ~/wireguard/peer*/peer*.conf
+          echo "Endpoint: ${{ secrets.IRAN_SERVER_IP }}:51820"
+
+      - name: Keep Alive
+        run: |
+          sleep 3600
