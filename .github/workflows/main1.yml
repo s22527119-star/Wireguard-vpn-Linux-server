@@ -1,0 +1,110 @@
+name: WireGuard Self-Hosted Style
+
+on:
+  workflow_dispatch:
+
+jobs:
+  vpn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    
+    steps:
+      - name: Install WireGuard
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wireguard-tools curl
+
+      - name: Generate Config
+        run: |
+          # سرور
+          SERVER_PRIV=$(wg genkey)
+          SERVER_PUB=$(echo $SERVER_PRIV | wg pubkey)
+          
+          # کلاینت‌ها
+          for i in 1 2 3; do
+            CLIENT_PRIV="CLIENT${i}_PRIV"
+            CLIENT_PUB="CLIENT${i}_PUB"
+            declare $CLIENT_PRIV=$(wg genkey)
+            declare $CLIENT_PUB=$(echo ${!CLIENT_PRIV} | wg pubkey)
+            echo "$CLIENT_PRIV=${!CLIENT_PRIV}" >> $GITHUB_ENV
+            echo "$CLIENT_PUB=${!CLIENT_PUB}" >> $GITHUB_ENV
+          done
+          
+          echo "SERVER_PRIV=$SERVER_PRIV" >> $GITHUB_ENV
+          echo "SERVER_PUB=$SERVER_PUB" >> $GITHUB_ENV
+          
+          # کانفیگ
+          sudo tee /etc/wireguard/wg0.conf > /dev/null << EOF
+          [Interface]
+          Address = 10.66.66.1/24
+          ListenPort = 51820
+          PrivateKey = $SERVER_PRIV
+          MTU = 1420
+          PostUp = echo 1 > /proc/sys/net/ipv4/ip_forward
+          PostUp = iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+          PostDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+          [Peer]
+          PublicKey = $CLIENT1_PUB
+          AllowedIPs = 10.66.66.2/32
+          
+          [Peer]
+          PublicKey = $CLIENT2_PUB
+          AllowedIPs = 10.66.66.3/32
+          
+          [Peer]
+          PublicKey = $CLIENT3_PUB
+          AllowedIPs = 10.66.66.4/32
+          EOF
+          
+          sudo wg-quick up wg0
+          
+          echo "WireGuard is up!"
+
+      - name: Create Client Configs
+        run: |
+          PUBLIC_IP=$(curl -s ifconfig.me)
+          
+          echo "========================================="
+          echo "Client Configurations"
+          echo "========================================="
+          echo ""
+          
+          for i in 1 2 3; do
+            CLIENT_PRIV_VAR="CLIENT${i}_PRIV"
+            echo "# Client $i"
+            echo "[Interface]"
+            echo "PrivateKey = ${!CLIENT_PRIV_VAR}"
+            echo "Address = 10.66.66.$((i+1))/24"
+            echo "DNS = 8.8.8.8, 1.1.1.1"
+            echo ""
+            echo "[Peer]"
+            echo "PublicKey = $SERVER_PUB"
+            echo "Endpoint = $PUBLIC_IP:51820"
+            echo "AllowedIPs = 0.0.0.0/0"
+            echo "PersistentKeepalive = 25"
+            echo ""
+            echo "---"
+            echo ""
+          done
+          
+          echo "========================================="
+          echo "Server: $PUBLIC_IP:51820"
+          echo "========================================="
+
+      - name: Maintain Connection
+        run: |
+          echo "Server active!"
+          echo "Test if direct connection works:"
+          PUBLIC_IP=$(curl -s ifconfig.me)
+          echo "IP: $PUBLIC_IP"
+          echo "Port: 51820/UDP"
+          echo ""
+          echo "If direct connection fails, use one of the tunnel methods above"
+          
+          # Check every 5 minutes
+          for i in {1..72}; do
+            echo "[$(date)] Uptime: $((i*5)) min"
+            sudo wg show 2>/dev/null | head -5
+            sleep 300
+          done
