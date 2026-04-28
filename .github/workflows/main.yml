@@ -1,4 +1,4 @@
-name: WireGuard Server + Reverse Tunnel to Iranian Server
+name: WireGuard with AutoSSH Reverse Tunnel
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 360
     
     steps:
-      - name: Start WireGuard Server
+      - name: Start WireGuard
         run: |
           docker run -d \
             --name=wireguard \
@@ -18,8 +18,8 @@ jobs:
             -e PUID=1000 \
             -e PGID=1000 \
             -e SERVERURL=${{ secrets.IRAN_SERVER_IP }} \
-            -e SERVERPORT=51820 \
-            -e PEERS=5 \
+            -e SERVERPORT=${{ secrets.IRAN_SERVER_PORT }} \
+            -e PEERS=10 \
             -e PEERDNS=8.8.8.8 \
             -p 51820:51820/udp \
             -v ~/wireguard:/config \
@@ -28,69 +28,61 @@ jobs:
             linuxserver/wireguard:latest
           
           sleep 20
-          echo "WireGuard server started"
 
-      - name: Create Reverse Tunnel to Iranian Server
+      - name: Setup AutoSSH Tunnel
         env:
           IRAN_SERVER_IP: ${{ secrets.IRAN_SERVER_IP }}
           IRAN_SERVER_USER: ${{ secrets.IRAN_SERVER_USER }}
           IRAN_SERVER_SSH_KEY: ${{ secrets.IRAN_SERVER_SSH_KEY }}
           IRAN_SERVER_PORT: ${{ secrets.IRAN_SERVER_PORT }}
         run: |
+          # نصب autossh
+          sudo apt-get update
+          sudo apt-get install -y autossh
+          
+          # تنظیم کلید SSH
           mkdir -p ~/.ssh
           echo "$IRAN_SERVER_SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           
-          # ایجاد تونل معکوس از رانر به سرور ایران
-          # پورت 51820 رانر رو به پورت دلخواه روی سرور ایران فوروارد می‌کنیم
-          ssh -o StrictHostKeyChecking=no \
-              -o ServerAliveInterval=60 \
-              -o ServerAliveCountMax=3 \
-              -R ${{ secrets.IRAN_SERVER_PORT }}:localhost:51820 \
-              -N -f \
-              $IRAN_SERVER_USER@$IRAN_SERVER_IP
+          # ایجاد تونل با autossh (اتصال مجدد خودکار)
+          AUTOSSH_PIDFILE=/tmp/autossh.pid \
+          AUTOSSH_POLL=60 \
+          AUTOSSH_GATETIME=30 \
+          AUTOSSH_FIRST_POLL=30 \
+          autossh -M 0 \
+            -o "StrictHostKeyChecking=no" \
+            -o "ServerAliveInterval=30" \
+            -o "ServerAliveCountMax=3" \
+            -o "ExitOnForwardFailure=yes" \
+            -o "TCPKeepAlive=yes" \
+            -R ${IRAN_SERVER_PORT}:localhost:51820 \
+            -N \
+            $IRAN_SERVER_USER@$IRAN_SERVER_IP &
+          
+          echo "AutoSSH tunnel started"
+          sleep 10
           
           echo "========================================="
-          echo "Reverse tunnel created!"
-          echo "WireGuard Endpoint: $IRAN_SERVER_IP:${{ secrets.IRAN_SERVER_PORT }}"
+          echo "WireGuard ready at: $IRAN_SERVER_IP:$IRAN_SERVER_PORT"
           echo "========================================="
 
-      - name: Show Client Configurations
+      - name: Show and Monitor
         run: |
           echo "=== Client Configs ==="
-          echo "Server: ${{ secrets.IRAN_SERVER_IP }}:${{ secrets.IRAN_SERVER_PORT }}"
+          sudo find ~/wireguard -name "peer*.conf" -exec cat {} \;
+          
           echo ""
+          echo "========================================="
+          echo "Server running - Copy configs above"
+          echo "========================================="
           
-          # نمایش کانفیگ‌ها
-          sudo find ~/wireguard -name "peer*.conf" -type f | while read conf; do
-            echo "----------------------------------------"
-            cat "$conf"
-            echo "----------------------------------------"
-            echo ""
-          done
-          
-          echo "⚠️  Replace Endpoint with: ${{ secrets.IRAN_SERVER_IP }}:${{ secrets.IRAN_SERVER_PORT }}"
-
-      - name: Keep Alive with Monitoring
-        run: |
-          echo "Server is running..."
-          echo "Check every 5 minutes to keep tunnel alive"
-          echo ""
-          
-          for i in $(seq 1 72); do  # 72 * 5 = 360 دقیقه = 6 ساعت
-            minutes=$((i * 5))
-            echo "[$(date)] Uptime: $minutes minutes"
+          # مانیتورینگ با پینگ سرور ایران
+          for i in $(seq 1 72); do
+            echo "[$(date)] Session alive: $((i*5)) minutes"
             
-            # Check if WireGuard is running
-            docker exec wireguard wg show 2>/dev/null | grep -E "interface|peer|transfer" || echo "WireGuard check failed"
-            
-            # Check reverse tunnel
-            ssh -o StrictHostKeyChecking=no \
-                -o ConnectTimeout=5 \
-                -o ServerAliveInterval=10 \
-                -p ${{ secrets.IRAN_SERVER_SSH_PORT }} \
-                ${{ secrets.IRAN_SERVER_USER }}@${{ secrets.IRAN_SERVER_IP }} \
-                "echo 'Tunnel alive at $(date)'" 2>/dev/null || echo "Tunnel check failed"
+            # چک کردن تونل
+            ps aux | grep autossh | grep -v grep || echo "AutoSSH not running!"
             
             sleep 300
           done
