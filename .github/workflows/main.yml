@@ -1,15 +1,15 @@
-name: WireGuard Server with SSH Reverse Tunnel
+name: WireGuard VPN - Debug Mode
 
 on:
   workflow_dispatch:
 
 jobs:
-  vpn-server:
+  vpn-debug:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 30
     
     steps:
-      - name: Start WireGuard Server
+      - name: Start WireGuard
         run: |
           mkdir -p ~/wireguard
           
@@ -19,111 +19,104 @@ jobs:
             --cap-add=SYS_MODULE \
             -e PUID=1000 \
             -e PGID=1000 \
-            -e SERVERURL=${{ secrets.IRAN_SERVER_IP }} \
-            -e SERVERPORT=${{ secrets.IRAN_SERVER_PORT }} \
-            -e PEERS=5 \
+            -e PEERS=3 \
             -e PEERDNS=8.8.8.8 \
+            -e SERVERURL=auto \
+            -e SERVERPORT=51820 \
             -p 51820:51820/udp \
             -v ~/wireguard:/config \
             --sysctl="net.ipv4.conf.all.src_valid_mark=1" \
-            --sysctl="net.ipv4.ip_forward=1" \
             linuxserver/wireguard:latest
           
           sleep 20
-          echo "WireGuard server started"
+          
+          echo "=== WireGuard Status ==="
+          docker exec wireguard wg show 2>/dev/null || echo "WireGuard not ready yet"
+          
+          echo "=== WireGuard Port Check ==="
+          sudo netstat -tuln | grep 51820 || echo "Port 51820 not listening"
 
-      - name: Create SSH Reverse Tunnel (Fixed)
+      - name: Debug SSH Connection
         run: |
-          # تنظیم SSH
+          echo "=== Step 1: Create SSH directory ==="
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          
+          echo "=== Step 2: Check Secret exists ==="
+          if [ -z "${{ secrets.IRAN_SERVER_SSH_KEY }}" ]; then
+            echo "❌ IRAN_SERVER_SSH_KEY is empty!"
+            exit 1
+          else
+            echo "✅ SSH key found (length: ${#SSH_KEY})"
+          fi
+          
+          echo "=== Step 3: Save SSH key ==="
           echo "${{ secrets.IRAN_SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
+          ls -la ~/.ssh/
           
-          # اضافه کردن host key
-          ssh-keyscan -H ${{ secrets.IRAN_SERVER_IP }} >> ~/.ssh/known_hosts 2>/dev/null
+          echo "=== Step 4: Check key format ==="
+          head -1 ~/.ssh/id_rsa
           
-          # روش صحیح SSH reverse tunnel
-          # توجه: فرمت درست -R [remote_port]:localhost:[local_port]
-          
+          echo "=== Step 5: Test SSH connection ==="
           ssh \
             -o StrictHostKeyChecking=accept-new \
-            -o ServerAliveInterval=60 \
-            -o ServerAliveCountMax=3 \
-            -o ExitOnForwardFailure=yes \
-            -o TCPKeepAlive=yes \
-            -N -f \
-            -R ${{ secrets.IRAN_SERVER_PORT }}:localhost:51820 \
-            ${{ secrets.IRAN_SERVER_USER }}@${{ secrets.IRAN_SERVER_IP }}
+            -o ConnectTimeout=10 \
+            -o BatchMode=yes \
+            -v \
+            ${{ secrets.IRAN_SERVER_USER }}@${{ secrets.IRAN_SERVER_IP }} \
+            "echo 'SSH connection successful'" 2>&1 || echo "SSH connection failed"
+
+      - name: Try Simple Reverse Tunnel
+        run: |
+          echo "=== Creating reverse tunnel ==="
+          
+          # Kill existing tunnels
+          pkill ssh 2>/dev/null || true
+          sleep 2
+          
+          # Simple reverse tunnel
+          ssh \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=10 \
+            -o ServerAliveInterval=30 \
+            -o ExitOnForwardFailure=no \
+            -f -N \
+            -R 51820:127.0.0.1:51820 \
+            ${{ secrets.IRAN_SERVER_USER }}@${{ secrets.IRAN_SERVER_IP }} \
+            2>&1
           
           sleep 5
           
-          # بررسی موفقیت‌آمیز بودن تونل
+          echo "=== Check if tunnel is running ==="
           if ps aux | grep "ssh.*-R" | grep -v grep; then
-            echo "========================================="
-            echo "✅ Reverse tunnel established!"
-            echo "WireGuard Endpoint: ${{ secrets.IRAN_SERVER_IP }}:${{ secrets.IRAN_SERVER_PORT }}"
-            echo "========================================="
+            echo "✅ SSH tunnel process found"
           else
-            echo "❌ Tunnel failed! Check SSH credentials"
-            exit 1
+            echo "❌ No SSH tunnel process"
+            
+            # Try alternative: without -f flag
+            echo "=== Trying alternative method ==="
+            timeout 10 ssh \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=10 \
+              -N \
+              -R 51820:127.0.0.1:51820 \
+              ${{ secrets.IRAN_SERVER_USER }}@${{ secrets.IRAN_SERVER_IP }} \
+              2>&1 &
+            
+            sleep 5
           fi
 
       - name: Show Client Configs
         run: |
-          echo "========================================="
-          echo "Client Configurations"
-          echo "========================================="
-          echo ""
-          
-          sudo find ~/wireguard -name "peer*.conf" -type f | while read conf; do
-            echo "----------------------------------------"
-            echo "Config: $(basename $conf)"
-            echo "----------------------------------------"
-            sudo cat "$conf"
+          echo "=== Client Configurations ==="
+          sudo find ~/wireguard -name "peer*.conf" -type f 2>/dev/null | while read conf; do
+            echo "--- Config: $conf ---"
+            sudo cat "$conf" 2>/dev/null || cat "$conf" 2>/dev/null
             echo ""
-          done
+          done || echo "No configs found in ~/wireguard"
           
-          echo ""
-          echo "⚠️  IMPORTANT: Change Endpoint in configs to:"
-          echo "   Endpoint = ${{ secrets.IRAN_SERVER_IP }}:${{ secrets.IRAN_SERVER_PORT }}"
-          echo ""
-
-      - name: Monitor and Keep Alive
-        run: |
-          echo "========================================="
-          echo "Server Active - Keep this running"
-          echo "Endpoint: ${{ secrets.IRAN_SERVER_IP }}:${{ secrets.IRAN_SERVER_PORT }}"
-          echo "========================================="
-          echo ""
-          
-          # Keep alive with monitoring
-          for i in $(seq 1 72); do
-            minutes=$((i * 5))
-            echo "[$(date '+%H:%M:%S')] Uptime: $minutes minutes"
-            
-            # Check WireGuard
-            if docker exec wireguard wg show 2>/dev/null | grep -q "interface"; then
-              echo "  WireGuard: ✅ Running"
-            else
-              echo "  WireGuard: ❌ Failed"
-            fi
-            
-            # Check SSH tunnel
-            if ps aux | grep -q "ssh.*-R.*51820"; then
-              echo "  SSH Tunnel: ✅ Active"
-            else
-              echo "  SSH Tunnel: ❌ Disconnected"
-              # تلاش مجدد برای اتصال
-              echo "  Reconnecting..."
-              ssh \
-                -o StrictHostKeyChecking=accept-new \
-                -o ServerAliveInterval=60 \
-                -o ConnectTimeout=10 \
-                -N -f \
-                -R ${{ secrets.IRAN_SERVER_PORT }}:localhost:51820 \
-                ${{ secrets.IRAN_SERVER_USER }}@${{ secrets.IRAN_SERVER_IP }} 2>/dev/null
-            fi
-            
-            echo ""
-            sleep 300  # 5 دقیقه
-          done
+          echo "=== Alternative config locations ==="
+          sudo find / -name "peer*.conf" -type f 2>/dev/null | head -5
