@@ -1,4 +1,4 @@
-name: Deploy WireGuard VPN for YouTube/Instagram Access
+name: Deploy WireGuard VPN (Direct Install, No Docker)
 
 on:
   push:
@@ -27,84 +27,88 @@ jobs:
           # به‌روزرسانی سیستم
           sudo apt update && sudo apt upgrade -y
           
-          # نصب Docker اگر وجود نداره (docker.io برای Ubuntu)
-          if ! command -v docker &> /dev/null; then
-            sudo apt install -y docker.io
-            sudo systemctl start docker
-            sudo systemctl enable docker
-            sudo usermod -aG docker $USER  # اضافه کردن کاربر به گروه docker
+          # نصب WireGuard (برای Ubuntu/Debian)
+          sudo apt install -y wireguard wireguard-tools
+          
+          # اگر kernel قدیمی باشه، dkms برای module (اختیاری، اگر ارور داد)
+          if ! modprobe wireguard; then
+            sudo apt install -y linux-headers-\$(uname -r)
+            sudo apt install -y wireguard-dkms
+            sudo modprobe wireguard
           fi
           
-          # نصب Docker Compose اگر وجود نداره (v2 از docker plugin)
-          if ! docker compose version &> /dev/null; then
-            sudo apt install -y docker-compose-plugin
-          fi
-          
-          # فعال کردن IP forwarding در host
+          # فعال کردن IP forwarding
           echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf
           sudo sysctl -p
           
-          # دایرکتوری و فایل docker-compose.yml
-          mkdir -p ~/wireguard
-          cd ~/wireguard
+          # فایروال: باز کردن پورت (اگر UFW فعاله)
+          sudo ufw allow 51820/udp || true  # اگر UFW نصب نباشه، رد کن
           
-          # پاک کردن config قدیمی اگر وجود داره
-          rm -rf config
-          mkdir config
+          # پاک کردن config قدیمی
+          sudo wg-quick down wg0 || true
+          sudo rm -f /etc/wireguard/wg0.conf
+          sudo rm -rf /etc/wireguard/peer*
           
-          cat > docker-compose.yml << COMPOSE
-version: "3.8"
-services:
-  wireguard:
-    image: linuxserver/wireguard:latest
-    container_name: wireguard
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Asia/Tehran
-      - SERVERURL=$SERVER_IP  # IP سرور (حالا expand می‌شه)
-      - SERVERPORT=51820
-      - PEERS=1  # تعداد کلاینت‌ها
-      - PEERDNS=8.8.8.8,1.1.1.1  # DNS برای دور زدن فیلترینگ
-      - LOG_CONFS=true  # لاگ configها رو فعال کن
-    volumes:
-      - ./config:/config
-      - /lib/modules:/lib/modules
-    ports:
-      - 51820:51820/udp
-    sysctls:
-      - net.ipv4.conf.all.src_valid_mark=1
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    restart: unless-stopped
-    privileged: true  # برای دسترسی شبکه
-    security_opt:
-      - no-new-privileges:true  # امنیت بیشتر
-COMPOSE
+          # ایجاد دایرکتوری
+          sudo mkdir -p /etc/wireguard
+          cd /etc/wireguard
           
-          # راه‌اندازی (با docker compose v2)
-          docker compose down  # اگر اجرا شده، خاموش کن
-          docker compose up -d
+          # تولید کلیدهای سرور
+          SERVER_PRIVKEY=\$(wg genkey)
+          SERVER_PUBKEY=\$(echo \$SERVER_PRIVKEY | wg pubkey)
           
-          # منتظر آماده شدن (تا config تولید بشه)
-          sleep 20
+          # تولید کلیدهای کلاینت (peer1)
+          CLIENT_PRIVKEY=\$(wg genkey)
+          CLIENT_PUBKEY=\$(echo \$CLIENT_PRIVKEY | wg pubkey)
+          
+          # IPهای VPN (سابنت 10.13.13.0/24)
+          SERVER_VPN_IP=10.13.13.1/24
+          CLIENT_VPN_IP=10.13.13.2/24
+          
+          # فایل config سرور (wg0.conf)
+          cat > wg0.conf << CONF
+[Interface]
+Address = $SERVER_VPN_IP
+PrivateKey = $SERVER_PRIVKEY
+ListenPort = 51820
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+[Peer]
+PublicKey = $CLIENT_PUBKEY
+AllowedIPs = $CLIENT_VPN_IP
+CONF
+          
+          sudo chmod 600 wg0.conf
+          
+          # config کلاینت (peer1.conf) – برای دانلود
+          cat > peer1.conf << CLIENTCONF
+[Interface]
+PrivateKey = $CLIENT_PRIVKEY
+Address = $CLIENT_VPN_IP
+DNS = 8.8.8.8, 1.1.1.1
+
+[Peer]
+PublicKey = $SERVER_PUBKEY
+AllowedIPs = 0.0.0.0/0
+Endpoint = $SERVER_IP:51820
+PersistentKeepalive = 25
+CLIENTCONF
+          
+          # راه‌اندازی WireGuard
+          sudo wg-quick up wg0
+          sudo systemctl enable wg-quick@wg0
           
           # چک وضعیت
-          docker logs wireguard | tail -n 10
+          sudo wg show
           
           # نمایش config کلاینت
-          if [ -f /config/peer1/peer1.conf ]; then
-            echo "Config کلاینت (peer1.conf):"
-            cat ~/wireguard/config/peer1/peer1.conf
-            echo ""
-            echo "فایل QR در: ~/wireguard/config/peer1/peer1.png"
-            echo "برای دانلود: scp $USER@$SERVER_IP:~/wireguard/config/peer1/peer1.conf ."
-          else
-            echo "خطا: config تولید نشده. لاگ‌ها رو چک کن."
-            docker logs wireguard
-          fi
+          echo "Config کلاینت (peer1.conf) برای یوتیوب/اینستاگرام:"
+          cat /etc/wireguard/peer1.conf
+          echo ""
+          echo "این فایل رو دانلود کن: scp $SSH_USERNAME@$SERVER_IP:/etc/wireguard/peer1.conf ."
+          echo "در اپ WireGuard import کن. تمام ترافیک (0.0.0.0/0) از VPN عبور می‌کنه و DNS خارجی ست شده."
+          echo ""
+          echo "وضعیت: sudo wg show wg0"
+          echo "خاموش/روشن: sudo wg-quick down/up wg0"
         EOF
