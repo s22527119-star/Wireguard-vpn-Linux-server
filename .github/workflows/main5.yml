@@ -1,0 +1,22 @@
+name: SSH with Password
+
+on:
+  workflow_dispatch:   # امکان اجرای دستی از تب Actions
+    inputs:
+      commands:
+        description: 'دستور(ها) برای اجرا روی سرور'
+        required: true
+        default: 'whoami; uptime'
+
+jobs:
+  ssh-connect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: اجرای دستور SSH با پسورد
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USERNAME }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          script: ${{ github.event.inputs.commands }}
